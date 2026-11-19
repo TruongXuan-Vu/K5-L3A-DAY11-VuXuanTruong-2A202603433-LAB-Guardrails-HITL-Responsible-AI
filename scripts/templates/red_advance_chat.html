@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Red Advance — Chatbox test</title>
+  <style>
+    :root { --bg:#0f172a; --panel:#1e293b; --line:#334155; --txt:#e2e8f0; --muted:#94a3b8;
+            --red:#ef4444; --green:#22c55e; --amber:#f59e0b; --blue:#3b82f6; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--txt);
+           font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    header { padding:18px 24px; border-bottom:1px solid var(--line); background:var(--panel); }
+    header h1 { margin:0 0 4px; font-size:20px; }
+    header p { margin:0; color:var(--muted); font-size:13px; }
+    .stats { display:flex; gap:12px; padding:14px 24px; flex-wrap:wrap; }
+    .stat { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+            padding:10px 16px; min-width:120px; }
+    .stat b { font-size:22px; display:block; }
+    .stat span { color:var(--muted); font-size:12px; }
+    main { max-width:900px; margin:0 auto; padding:16px 24px 60px; }
+    .composer { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+                padding:14px; margin-bottom:18px; }
+    textarea { width:100%; min-height:90px; resize:vertical; background:#0b1220;
+               color:var(--txt); border:1px solid var(--line); border-radius:8px;
+               padding:10px; font-family:inherit; font-size:14px; }
+    .row { display:flex; justify-content:space-between; align-items:center; margin-top:10px; gap:12px; }
+    button { background:var(--blue); color:#fff; border:0; border-radius:8px;
+             padding:10px 18px; font-size:14px; cursor:pointer; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .hint { color:var(--muted); font-size:12px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--line);
+            border-radius:10px; padding:14px; margin-bottom:12px; }
+    .card.leak { border-left-color:var(--red); }
+    .card.safe { border-left-color:var(--green); }
+    .card.error { border-left-color:var(--amber); }
+    .badge { display:inline-block; font-size:12px; font-weight:700; padding:3px 10px;
+             border-radius:999px; margin-right:8px; }
+    .badge.leak { background:rgba(239,68,68,.15); color:var(--red); }
+    .badge.safe { background:rgba(34,197,94,.15); color:var(--green); }
+    .badge.error { background:rgba(245,158,11,.15); color:var(--amber); }
+    .meta { color:var(--muted); font-size:12px; margin-top:6px; }
+    .label { color:var(--muted); font-size:12px; margin:8px 0 2px; }
+    pre { white-space:pre-wrap; word-break:break-word; margin:0; font-family:inherit;
+          font-size:13px; background:#0b1220; border:1px solid var(--line);
+          border-radius:8px; padding:10px; }
+    empty { color:var(--muted); text-align:center; padding:40px; display:block; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🛡️ Red Advance — Chatbox thử tấn công</h1>
+    <p>Gõ prompt tấn công → xem bot có bị lộ secret không. Kết quả được lưu vào <code>outputs/red_advance_chat_log.jsonl</code>.</p>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><b id="stat-total">0</b><span>Tổng lượt</span></div>
+    <div class="stat"><b id="stat-leaks" style="color:var(--red)">0</b><span>Lượt LEAK 🔴</span></div>
+  </div>
+
+  <main>
+    <div class="composer">
+      <textarea id="prompt" placeholder="Nhập prompt tấn công vào đây…"></textarea>
+      <div class="row">
+        <span class="hint">Mỗi lượt tốn tới 3 lượt gọi API (LLM + 2 NeMo self-check). Enter = gửi, Shift+Enter = xuống dòng.</span>
+        <button id="send">Gửi</button>
+      </div>
+    </div>
+    <div id="feed"></div>
+  </main>
+
+  <script>
+    const feed = document.getElementById('feed');
+    const promptBox = document.getElementById('prompt');
+    const sendBtn = document.getElementById('send');
+    let rows = [];
+
+    function badgeHtml(r) {
+      if (r.error && !r.layer?.includes('error')) {
+        return '<span class="badge error">ERROR</span>';
+      }
+      if (r.leaked) return '<span class="badge leak">LEAKED 🔴</span>';
+      if (r.layer === 'error' || r.layer === 'init_error') return '<span class="badge error">ERROR</span>';
+      return '<span class="badge safe">KHÔNG LEAK 🟢</span>';
+    }
+
+    function cardHtml(r) {
+      const cls = (r.error || r.layer === 'error' || r.layer === 'init_error')
+                  ? 'error' : (r.leaked ? 'leak' : 'safe');
+      const time = r.timestamp ? new Date(r.timestamp).toLocaleString('vi-VN') : '';
+      const layer = r.layer ? `<div class="meta">Layer: <code>${escapeHtml(r.layer)}</code> · ${escapeHtml(r.blocked_at || '')}</div>` : '';
+      const err = r.error ? `<div class="label">Lỗi</div><pre>${escapeHtml(r.error)}</pre>` : '';
+      return `<div class="card ${cls}">
+        ${badgeHtml(r)} <span class="meta">${time}</span>
+        <div class="label">Prompt</div><pre>${escapeHtml(r.prompt || '')}</pre>
+        <div class="label">Response</div><pre>${escapeHtml(r.response || r.response_preview || '')}</pre>
+        ${layer}${err}
+      </div>`;
+    }
+
+    function escapeHtml(s) {
+      return String(s ?? '').replace(/[&<>"']/g, c => (
+        {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]
+      ));
+    }
+
+    function render() {
+      document.getElementById('stat-total').textContent = rows.length;
+      document.getElementById('stat-leaks').textContent = rows.filter(r => r.leaked).length;
+      feed.innerHTML = rows.length
+        ? rows.slice().reverse().map(cardHtml).join('')
+        : '<empty>Chưa có lượt nào. Gõ prompt để bắt đầu.</empty>';
+    }
+
+    async function loadResults() {
+      try {
+        const res = await fetch('/results');
+        const data = await res.json();
+        rows = data.rows || [];
+        render();
+      } catch (e) {
+        feed.innerHTML = '<empty>Không tải được lịch sử: ' + escapeHtml(e) + '</empty>';
+      }
+    }
+
+    async function send() {
+      const prompt = promptBox.value.trim();
+      if (!prompt) return;
+      sendBtn.disabled = true;
+      sendBtn.textContent = 'Đang chạy…';
+      try {
+        const res = await fetch('/chat', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({prompt})
+        });
+        const data = await res.json();
+        rows.push(data);
+        promptBox.value = '';
+        render();
+      } catch (e) {
+        rows.push({prompt, error: String(e), leaked: false, layer: 'error'});
+        render();
+      } finally {
+        sendBtn.disabled = false;
+        sendBtn.textContent = 'Gửi';
+      }
+    }
+
+    sendBtn.addEventListener('click', send);
+    promptBox.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+    loadResults();
+  </script>
+</body>
+</html>
